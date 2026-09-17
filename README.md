@@ -19,3 +19,15 @@ source and released-binary hashes.
 The installable binary ZIP and Nexus description are distributed separately.
 This code targets offline play with the tested Resurrection executable/layout;
 it does not include or license the original game files.
+
+Support Development
+
+If you enjoy the mod and want to support future development, optional donations are appreciated:
+
+PayPal:
+https://www.paypal.com/donate/?hosted_button_id=RA3XBB6VDUTAC
+
+The mod will remain free for everyone.
+
+Made by Antagony
+https://www.nexusmods.com/fridaythe13ththegame/mods/58

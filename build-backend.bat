@@ -1,25 +1,37 @@
 @echo off
-setlocal EnableExtensions
-cd /d "%~dp0"
-rem Some launchers supply both Path and PATH; MSBuild rejects that environment.
-set Path=
-set "Path=%SystemRoot%\System32;%SystemRoot%"
-set "TEMP=%LOCALAPPDATA%\Temp"
-set "TMP=%LOCALAPPDATA%\Temp"
+setlocal
+
 call "%~dp0VERIFY-FROZEN-HASHES.bat"
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+  echo.
+  echo Build stopped so the frozen autonomous Jason AI cannot be altered accidentally.
+  pause
+  exit /b 1
+)
 
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" (
-  echo ERROR: Visual Studio Installer\vswhere.exe not found.
-  exit /b 2
+  echo Visual Studio 2022 or Build Tools with Desktop development with C++ is required.
+  pause
+  exit /b 1
 )
-for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -find MSBuild\Current\Bin\MSBuild.exe`) do set "MSBUILD=%%I"
+for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe`) do set "MSBUILD=%%i"
 if not defined MSBUILD (
-  echo ERROR: MSBuild not found. Install Visual Studio with Desktop development with C++.
-  exit /b 2
+  echo MSBuild not found.
+  pause
+  exit /b 1
 )
-"%MSBUILD%" "%~dp0ResurrectedOfflineBots.sln" /m:1 /nologo /v:minimal /p:Configuration=Release /p:Platform=x64 /p:TrackFileAccess=false
-if errorlevel 1 exit /b 1
-echo Built backend: %~dp0bin\ResurrectedOfflineBots.dll
-exit /b 0
+"%MSBUILD%" "%~dp0ResurrectedOfflineBots.sln" /m /p:Configuration=Release /p:Platform=x64 /p:TrackFileAccess=false
+if errorlevel 1 (
+  echo Build failed.
+  pause
+  exit /b 1
+)
+copy /y "%~dp0bin\ResurrectedOfflineBots.dll" "%~dp0ResurrectedOfflineBots.dll" >nul
+
+echo.
+echo Built: %~dp0ResurrectedOfflineBots.dll
+echo 18L-AC hooks ILLBackendBlueprintLibrary::RequestOfflineMode synchronously and uses PASS-THROUGH lifecycle trace hooks only.
+echo No lifecycle behavior is replaced and frozen AI is not auto-started in this foundation proof.
+echo Frozen Features/Engine hashes were verified before compilation.
+pause

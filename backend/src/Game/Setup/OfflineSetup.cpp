@@ -6035,9 +6035,16 @@ namespace
             reinterpret_cast<uintptr_t>(sourcePlayerState) + 0x7B8);
         const std::string weaponPath = ReadSoftClassAssetPath(weapon);
 
+        // FName/string soft paths serialize an unset weapon as "None".
+        // Treat that exactly like an empty path.  Transferring killer
+        // ownership to an AI PlayerState with weapon=None prevents the stock
+        // CLIENT_RequestLoadPlayerSettings retry and strands ordinary escape
+        // endings in PostMatchOutro.
+        const bool weaponSelected =
+            !weaponPath.empty() && weaponPath != "None";
         if (!skin ||
             !Memory::IsReadable(skin, sizeof(UClass)) ||
-            weaponPath.empty())
+            !weaponSelected)
         {
             Logger::Error(
                 "18L-AK OUTRO METADATA: human intro owner has no selected Jason skin/weapon to copy");
@@ -6079,7 +6086,9 @@ namespace
             ReadSoftClassAssetPath(committedWeapon);
         const bool complete =
             committedSkin == skin &&
-            committedWeaponPath == weaponPath;
+            committedWeaponPath == weaponPath &&
+            !committedWeaponPath.empty() &&
+            committedWeaponPath != "None";
 
         if (complete)
         {

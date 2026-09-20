@@ -176,8 +176,14 @@ namespace
     UObject* ReadReflectedObjectProperty(
         UObject* owner,
         const char* propertyName);
+    int32_t FindFNameIndexExact(const char* wanted);
     bool IsValidatedLiveCounselorPawn(AActor* actor);
     bool SetLocalSpectatorViewTarget(UObject* target);
+    bool ReadCachedVehicleSeatFast(
+        UObject* seat,
+        AActor* expectedCar,
+        AActor*& outOccupant);
+    static AActor* g_LocalCounselorTarget = nullptr;
 
     UObject* g_JasonSpectatorPreviousTarget = nullptr;
     UObject* g_JasonSpectatorPreviousPlayerState = nullptr;
@@ -618,6 +624,44 @@ namespace
             (reason ? reason : "unknown"));
     }
 
+    void AbandonJasonSpectatorOverrideForWorldTeardown(const char* reason)
+    {
+        // LeavingMap destroys the current spectator pawn, Jason and counselor
+        // player states in the same frame.  Do not restore another actor or
+        // PlayerState here: even a readable pointer can already be pending
+        // kill.  The forced Jason PlayerState must still be removed from the
+        // stock controller before EndMatch runs, otherwise LeavingMap later
+        // follows that stale non-counselor spectator reference and crashes.
+        const bool wasForced = g_JasonSpectatorForced;
+        const bool stockTargetCleared =
+            !wasForced || WriteLocalSpectatingPlayer(nullptr);
+        g_JasonSpectatorForced = false;
+        g_JasonSpectatorPreviousTarget = nullptr;
+        g_JasonSpectatorPreviousPlayerState = nullptr;
+        g_LastObservedSpectatorPlayerState = nullptr;
+        g_CachedJasonSpectatorPawn = nullptr;
+        g_CachedJasonSpectatorPlayerState = nullptr;
+        g_NextJasonSpectatorRepairAt = 0;
+        g_NextJasonSpectatorPlayerStateRepairAt = 0;
+        g_JasonSpectatorOrbitInitialized = false;
+        // Keep reinsertion disabled until the next world adoption resets the
+        // spectator cycle.  No Jason camera work may restart during teardown.
+        g_InsertJasonOnNextSpectatorCycle = false;
+        std::memset(
+            g_SpectatorCycleSeenCounselors,
+            0,
+            sizeof(g_SpectatorCycleSeenCounselors));
+        g_SpectatorCycleSeenCount = 0;
+        if (wasForced)
+        {
+            Logger::Success(
+                std::string("18L-BL Jason spectator cleared before world teardown | reason=") +
+                (reason ? reason : "unknown") +
+                " | stockTargetCleared=" +
+                (stockTargetCleared ? "true" : "false"));
+        }
+    }
+
     bool ClearJasonSpectatorOverrideForLivePawn(
         APlayerController* controller)
     {
@@ -776,8 +820,178 @@ namespace
         return applied;
     }
 
+    int32_t CountValidatedLiveCounselorsForSpectatorSafety(
+        AActor*& outSoleCounselor)
+    {
+        outSoleCounselor = nullptr;
+        int32_t count = 0;
+        bool localAlreadyCounted = false;
+        for (int32_t i = 0;
+             i < g_JasonAITargetCount && i < JasonAITargetCapacity;
+             ++i)
+        {
+            AActor* counselor = g_JasonAITargets[i];
+            if (!IsValidatedLiveCounselorPawn(counselor))
+                continue;
+            outSoleCounselor = counselor;
+            localAlreadyCounted = localAlreadyCounted ||
+                counselor == g_LocalCounselorTarget;
+            ++count;
+        }
+        if (IsValidatedLiveCounselorPawn(g_LocalCounselorTarget) &&
+            !localAlreadyCounted)
+        {
+            outSoleCounselor = g_LocalCounselorTarget;
+            ++count;
+        }
+        return count;
+    }
+
+    bool IsLocalGamePausedForSpectatorSafety()
+    {
+        APlayerController* controller =
+            Engine::GetLocalPlayerController();
+        if (!controller || !controller->Class ||
+            !Memory::IsReadable(controller, sizeof(UObject)))
+        {
+            return false;
+        }
+
+        static UClass* cachedControllerClass = nullptr;
+        static UFunction* isPaused = nullptr;
+        if (cachedControllerClass != controller->Class)
+        {
+            cachedControllerClass = controller->Class;
+            isPaused = FindFunctionInHierarchyByName(
+                controller->Class,
+                "IsPaused");
+        }
+        if (!isPaused)
+            return false;
+
+        struct Params
+        {
+            bool ReturnValue;
+            uint8_t Padding[7];
+        } params{};
+        return SafeProcessEventCall(
+                   reinterpret_cast<uintptr_t>(controller),
+                   controller,
+                   isPaused,
+                   &params) &&
+            params.ReturnValue;
+    }
+
+    void ReleaseJasonSpectatorToSafeCounselor(const char* reason)
+    {
+        AActor* safeCounselor = nullptr;
+        const int32_t liveCounselors =
+            CountValidatedLiveCounselorsForSpectatorSafety(safeCounselor);
+        if (liveCounselors > 0 && safeCounselor &&
+            Memory::IsReadable(safeCounselor, sizeof(UObject)))
+        {
+            g_JasonSpectatorPreviousTarget =
+                reinterpret_cast<UObject*>(safeCounselor);
+            g_JasonSpectatorPreviousPlayerState =
+                ReadReflectedObjectProperty(
+                    reinterpret_cast<UObject*>(safeCounselor),
+                    "PlayerState");
+            ReleaseJasonSpectatorOverrideForCinematic(reason);
+            return;
+        }
+
+        AbandonJasonSpectatorOverrideForWorldTeardown(reason);
+    }
+
+    void ReleaseJasonSpectatorBeforeFinalCounselorDeath()
+    {
+        AActor* soleCounselor = nullptr;
+        const int32_t liveCounselors =
+            CountValidatedLiveCounselorsForSpectatorSafety(soleCounselor);
+        if (liveCounselors > 1)
+            return;
+
+        if (liveCounselors == 1 && soleCounselor &&
+            Memory::IsReadable(soleCounselor, sizeof(UObject)))
+        {
+            // Do not write the final counselor's PlayerState into the stock
+            // spectator field.  Its death and match teardown can occur in
+            // this same frame, leaving precisely the stale target that the
+            // shutdown path later dereferences.
+            AbandonJasonSpectatorOverrideForWorldTeardown(
+                "final-live-counselor");
+            return;
+        }
+
+        AbandonJasonSpectatorOverrideForWorldTeardown(
+            "no-live-counselors");
+        g_InsertJasonOnNextSpectatorCycle = false;
+    }
+
+    void PrepareJasonSpectatorForTeardownEvent(UFunction* function)
+    {
+        if (!g_JasonSpectatorForced || !function)
+            return;
+
+        // These are the stock reflected entry points that can synchronously
+        // end a match or return to the front end.  Waiting until the next
+        // controller tick is too late: LeavingMap may already have destroyed
+        // the forced Jason camera target and PlayerState by then.
+        static int32_t teardownNameIndices[] = {
+            -2, -2, -2, -2, -2, -2, -2, -2, -2
+        };
+        static const char* teardownNames[] = {
+            "EndMatch",
+            "FinishMatch",
+            "HandleMatchHasEnded",
+            "OnMatchEnded",
+            "StartToLeaveMap",
+            "ReturnToMainMenu",
+            "ReturnToMainMenuHost",
+            "ClientReturnToMainMenu",
+            "ClientReturnToMainMenuWithTextReason"
+        };
+        for (size_t i = 0;
+             i < sizeof(teardownNameIndices) /
+                     sizeof(teardownNameIndices[0]);
+             ++i)
+        {
+            if (teardownNameIndices[i] == -2)
+            {
+                teardownNameIndices[i] =
+                    FindFNameIndexExact(teardownNames[i]);
+            }
+            if (teardownNameIndices[i] >= 0 &&
+                function->NameIndex == teardownNameIndices[i])
+            {
+                // The event is about to invalidate every match pawn and
+                // PlayerState.  Clear the forced Jason target; restoring a
+                // counselor here merely substitutes a different stale
+                // PlayerState for LeavingMap to dereference.
+                AbandonJasonSpectatorOverrideForWorldTeardown(
+                    "pre-teardown-event");
+                return;
+            }
+        }
+    }
+
     bool ShowJasonSpectatorView(bool rememberCurrent)
     {
+        if (IsLocalGamePausedForSpectatorSafety())
+            return false;
+
+        AActor* soleCounselor = nullptr;
+        if (CountValidatedLiveCounselorsForSpectatorSafety(
+                soleCounselor) <= 1)
+        {
+            // The stock game starts LeavingMap immediately after the last
+            // counselor dies.  Never enter a forced Jason view when there is
+            // no full controller tick left in which to restore the stock
+            // counselor/death camera.
+            g_InsertJasonOnNextSpectatorCycle = false;
+            return false;
+        }
+
         UObject* jason = reinterpret_cast<UObject*>(
             g_JasonAIState.Jason);
         if (!g_JasonAIState.Active || !jason ||
@@ -1020,6 +1234,19 @@ namespace
         {
             return;
         }
+
+        ReleaseJasonSpectatorBeforeFinalCounselorDeath();
+        if (!g_JasonSpectatorForced)
+            return;
+
+        // Return-to-menu is selected from the pause screen. Restore a live
+        // counselor while all relevant objects still exist, before the click
+        // can synchronously destroy the session and enter LeavingMap.
+        if (IsLocalGamePausedForSpectatorSafety())
+        {
+            ReleaseJasonSpectatorToSafeCounselor("pause-menu");
+            return;
+        }
         // Follow Jason at 60 Hz through the stock spectator-camera RPC. This
         // avoids touching BlueprintUpdateCamera's unstable out-parameter
         // memory and removes the visible 30 Hz judder on high-refresh displays.
@@ -1181,7 +1408,6 @@ namespace
     static ULONGLONG g_NextGrabKillStateLogAt = 0;
     static int32_t g_NextAdapterGrabKillSlot = 0;
     static bool g_StaleGrabReleaseAttempted = false;
-    static AActor* g_LocalCounselorTarget = nullptr;
     static UObject* g_LocalPlayerController = nullptr;
     static ULONGLONG g_NextLocalCounselorRefreshAt = 0;
     static int32_t g_CounselorEscapedPropertyOffset = -2;
@@ -2124,6 +2350,29 @@ namespace
         }
     }
 
+    __declspec(noinline) bool SafeClearObjectPointerField(
+        UObject* object,
+        uintptr_t offset)
+    {
+        if (!object || offset == 0 || offset >= 0x10000)
+            return false;
+
+        UObject** field = reinterpret_cast<UObject**>(
+            reinterpret_cast<uintptr_t>(object) + offset);
+        if (!Memory::IsReadable(field, sizeof(UObject*)))
+            return false;
+
+        __try
+        {
+            *field = nullptr;
+            return *field == nullptr;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
     void ResetStuckSamplingAfterNativeInteraction(ULONGLONG now)
     {
         g_JasonAIState.ConsecutiveStuckChecks = 0;
@@ -2289,10 +2538,93 @@ namespace
 
         if (g_VehicleInterceptCar)
         {
+            AActor* seatedCounselor = nullptr;
+            const bool partialVehicleGrab =
+                g_VehicleInterceptSeat &&
+                ReadCachedVehicleSeatFast(
+                    g_VehicleInterceptSeat,
+                    g_VehicleInterceptCar,
+                    seatedCounselor) &&
+                seatedCounselor == heldCounselor;
+            if (partialVehicleGrab)
+            {
+                // GetGrabbedCounselor becomes non-null before the paired
+                // vehicle animation has actually detached the counselor from
+                // the seat.  Treating that early pointer as success retired
+                // the car lane, ran grab-kill recovery, and left the player
+                // visibly seated with all vehicle input locked.  The seat is
+                // authoritative: suppress grab-kill input until it clears.
+                if (g_LastHeldCounselor != heldCounselor)
+                {
+                    g_LastHeldCounselor = heldCounselor;
+                    g_HeldCounselorObservedAt = now;
+                    g_GrabKillInputCommittedAt = 0;
+                    g_StaleGrabReleaseAttempted = false;
+                    Logger::Error(
+                        "18L-BQ partial driver grab detected; counselor remains seated, withholding grab-kill input");
+                }
+
+                if (g_VehicleExtractionInputAt == 0 ||
+                    now < g_VehicleExtractionInputAt + 5500)
+                {
+                    ResetStuckSamplingAfterNativeInteraction(now);
+                    return true;
+                }
+
+                // A paired pull-out that still has not cleared the seat after
+                // 5.5 seconds is irrecoverably incomplete.  Cancel only that
+                // stale native interaction, clear its Jason-side component,
+                // and keep the same car/seat lane alive for a clean retry.
+                UObject* manager = GetJasonInteractionManager(jason);
+                const bool released = manager &&
+                    ReleaseStaleJasonHidingInteraction(
+                        manager,
+                        jason,
+                        now,
+                        "partial-driver-extraction");
+                const bool componentCleared =
+                    SafeClearObjectPointerField(jason, 0x1558);
+
+                g_LastHeldCounselor = nullptr;
+                g_HeldCounselorObservedAt = 0;
+                g_GrabKillInputCommittedAt = 0;
+                g_NextAdapterGrabKillAttemptAt = 0;
+                g_StaleGrabReleaseAttempted = false;
+                g_VehicleExtractionInputAt = 0;
+                g_VehicleExtractionAttempts = 0;
+                g_VehicleDriverReadySince = 0;
+                g_VehicleHaveCachedDriverDoorPoint = false;
+                g_VehicleHaveLastDriverMovePoint = false;
+                g_VehicleLastDriverMoveAt = 0;
+                g_NextVehicleInterceptActionAt = now + 250;
+                if (released && componentCleared)
+                {
+                    Logger::Error(
+                        "18L-BQ stale partial driver extraction cancelled for retry | released=true | componentCleared=true");
+                }
+                else if (released)
+                {
+                    Logger::Error(
+                        "18L-BQ stale partial driver extraction cancelled for retry | released=true | componentCleared=false");
+                }
+                else if (componentCleared)
+                {
+                    Logger::Error(
+                        "18L-BQ stale partial driver extraction cancelled for retry | released=false | componentCleared=true");
+                }
+                else
+                {
+                    Logger::Error(
+                        "18L-BQ stale partial driver extraction cancelled for retry | released=false | componentCleared=false");
+                }
+                return true;
+            }
+
             // A successful driver extraction transfers ownership to the
-            // native grab/kill state. Retire the car route immediately so its
-            // road projection, MoveTo refresh and 4x pursuit writes cannot run
-            // alongside the paired grab animation or reacquire the same car.
+            // native grab/kill state only after the authoritative seat has
+            // cleared. Retire the car route so its road projection, MoveTo
+            // refresh and 4x pursuit writes cannot run alongside the paired
+            // grab animation or reacquire the same car.
             AActor* extractedFromCar = g_VehicleInterceptCar;
             g_IgnoredVehicleInterceptCar = extractedFromCar;
             g_IgnoredVehicleInterceptUntil = now + 5000;
@@ -9369,6 +9701,16 @@ namespace
             (Memory::IsReadable(started, 1) && *started != 0);
     }
 
+    bool IsDriverVehicleSeat(UObject* seat)
+    {
+        if (!seat || !Memory::IsReadable(seat, 0x512))
+            return false;
+
+        uint8_t* driver = reinterpret_cast<uint8_t*>(
+            reinterpret_cast<uintptr_t>(seat) + 0x511);
+        return Memory::IsReadable(driver, 1) && *driver != 0;
+    }
+
     AActor* FindOccupiedEscapeCar(
         UObject*& outSeat,
         AActor*& outOccupant)
@@ -9413,7 +9755,8 @@ namespace
                         preferred,
                         outSeat,
                         outOccupant,
-                        true))
+                        false) &&
+                    IsDriverVehicleSeat(outSeat))
                 {
                     return *parentCar;
             }
@@ -9471,7 +9814,8 @@ namespace
                     preferred,
                     seat,
                     occupant,
-                    true))
+                    false) ||
+                !IsDriverVehicleSeat(seat))
             {
                 continue;
             }
@@ -9515,7 +9859,8 @@ namespace
                     preferred,
                     ignoredSeat,
                     ignoredOccupant,
-                    true))
+                    false) &&
+                IsDriverVehicleSeat(ignoredSeat))
             {
                 g_IgnoredVehicleInterceptCar = nullptr;
                 g_IgnoredVehicleInterceptUntil = 0;
@@ -9581,7 +9926,8 @@ namespace
                         preferred,
                         seat,
                         occupant,
-                        true))
+                        false) ||
+                    !IsDriverVehicleSeat(seat))
                 {
                     continue;
                 }
@@ -9862,6 +10208,35 @@ namespace
         return true;
     }
 
+    bool HasVehicleRoadContinuation(
+        AActor* roadPoint,
+        AActor* previous)
+    {
+        AActor** neighbors = nullptr;
+        int32_t neighborCount = 0;
+        if (!ReadVehicleRoadNeighbors(
+                roadPoint,
+                neighbors,
+                neighborCount))
+        {
+            return false;
+        }
+
+        for (int32_t i = 0; i < neighborCount; ++i)
+        {
+            AActor* neighbor = neighbors[i];
+            if (neighbor &&
+                neighbor != previous &&
+                ObjectClassDerivesFromExact(
+                    reinterpret_cast<UObject*>(neighbor),
+                    "SCRoadPoint"))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool ResolveVehicleRoadCenterIntercept(
         const FVector& carLocation,
         const FVector& travelDirection,
@@ -10014,7 +10389,22 @@ namespace
         const float distanceToCurrent = segmentLength * (1.0f - projection);
         if (remainingLead <= distanceToCurrent)
         {
-            const float alpha = remainingLead / distanceToCurrent;
+            // A terminal SCRoadPoint commonly sits beyond the drivable escape
+            // trigger. Never Morph all the way to that endpoint. Keep Jason
+            // on the last interior portion of the authored road instead.
+            constexpr float EscapeEndpointBackoffCm = 2200.0f;
+            float safeAdvance = remainingLead;
+            if (!HasVehicleRoadContinuation(firstForward, nearest))
+            {
+                safeAdvance = (std::min)(
+                    safeAdvance,
+                    (std::max)(
+                        0.0f,
+                        distanceToCurrent - EscapeEndpointBackoffCm));
+            }
+            const float alpha = distanceToCurrent > 1.0f
+                ? safeAdvance / distanceToCurrent
+                : 0.0f;
             outLocation.X = currentLocation.X +
                 (currentNodeLocation.X - currentLocation.X) * alpha;
             outLocation.Y = currentLocation.Y +
@@ -10027,6 +10417,7 @@ namespace
         }
         remainingLead -= distanceToCurrent;
         float traversedLead = distanceToCurrent;
+        FVector lastInteriorLocation = currentLocation;
         outRouteDirection.X = segmentX / segmentLength;
         outRouteDirection.Y = segmentY / segmentLength;
 
@@ -10086,7 +10477,17 @@ namespace
 
             if (remainingLead <= segmentLength)
             {
-                const float alpha = remainingLead / segmentLength;
+                constexpr float EscapeEndpointBackoffCm = 2200.0f;
+                float safeAdvance = remainingLead;
+                if (!HasVehicleRoadContinuation(next, current))
+                {
+                    safeAdvance = (std::min)(
+                        safeAdvance,
+                        (std::max)(
+                            0.0f,
+                            segmentLength - EscapeEndpointBackoffCm));
+                }
+                const float alpha = safeAdvance / segmentLength;
                 outLocation.X = currentNodeLocation.X + segmentX * alpha;
                 outLocation.Y = currentNodeLocation.Y + segmentY * alpha;
                 outLocation.Z = currentNodeLocation.Z + segmentZ * alpha;
@@ -10095,17 +10496,19 @@ namespace
 
             remainingLead -= segmentLength;
             traversedLead += segmentLength;
+            lastInteriorLocation = currentNodeLocation;
             previous = current;
             current = next;
             currentNodeLocation = nextLocation;
         }
 
         // Near an authored road endpoint there may be less route remaining
-        // than the ideal lead. The farthest connected node is still a valid
-        // centerline interception point and is safer than a tangent fallback.
+        // than the ideal lead. The terminal node can be beyond the escape
+        // trigger, so fall back to the last interior point. The caller also
+        // requires this point to remain materially ahead of the live car.
         if (traversedLead >= 2500.0f)
         {
-            outLocation = currentNodeLocation;
+            outLocation = lastInteriorLocation;
             return true;
         }
         return false;
@@ -10532,7 +10935,28 @@ namespace
             routeDirection);
         if (usedNativeRoadGraph)
         {
-            selectedLead = lead;
+            const float candidateDX = projected.X - carLocation.X;
+            const float candidateDY = projected.Y - carLocation.Y;
+            const float actualForwardLead =
+                candidateDX * travelDirection.X +
+                candidateDY * travelDirection.Y;
+            // If the endpoint backoff leaves no useful intercept in front of
+            // the car, do not teleport through the escape trigger. Preserve
+            // 4x physical pursuit and retry from the next fresh car sample.
+            if (!std::isfinite(actualForwardLead) ||
+                actualForwardLead < 1200.0f ||
+                actualForwardLead > lead + 1000.0f)
+            {
+                if (now >= g_NextVehicleInterceptLogAt)
+                {
+                    g_NextVehicleInterceptLogAt = now + 3000;
+                    Logger::Debug(
+                        "18L-BR vehicle intercept: escape-boundary candidate rejected | forwardLeadCm=" +
+                        std::to_string(actualForwardLead));
+                }
+                return false;
+            }
+            selectedLead = actualForwardLead;
             // The authored road point provides exact centerline X/Y. Use the
             // nav query only to validate the destination and refine ground Z.
             FVector attempt{};
@@ -11470,9 +11894,35 @@ namespace
     {
         if (now < g_VehicleInterceptRetryAfter)
         {
+            // A completed pull-out deliberately suppresses this car while the
+            // paired grab animation owns Jason. If a living counselor gets
+            // back into that car's driver seat, the seat is authoritative:
+            // cancel the cooldown and start a fresh extraction episode rather
+            // than falling through to ordinary slash/grab combat.
+            UObject* reenteredSeat = nullptr;
+            AActor* reenteredDriver = nullptr;
+            if (g_IgnoredVehicleInterceptCar &&
+                IsStartedOccupiedCar(
+                    g_IgnoredVehicleInterceptCar,
+                    g_JasonAIState.Target,
+                    reenteredSeat,
+                    reenteredDriver,
+                    false) &&
+                IsDriverVehicleSeat(reenteredSeat))
+            {
+                g_IgnoredVehicleInterceptCar = nullptr;
+                g_IgnoredVehicleInterceptUntil = 0;
+                g_VehicleInterceptRetryAfter = 0;
+                g_NextVehicleInterceptActionAt = 0;
+                Logger::Success(
+                    "18L-BR occupied driver seat re-entered; extraction priority re-armed");
+            }
+            else
+            {
             return g_VehicleInterceptCar != nullptr ||
                 (g_IgnoredVehicleInterceptCar != nullptr &&
                  now < g_IgnoredVehicleInterceptUntil);
+            }
         }
 
         AActor* jason = g_JasonAIState.Jason;
@@ -12171,7 +12621,11 @@ namespace
                     "18L-AR vehicle intercept: driver-side detour complete; closing on extraction point");
             }
 
-            if (doorDistance > 90.0f)
+            // The successful September extraction route accepted Jason once
+            // he was within 135 cm of the driver-side point. Requiring 90 cm
+            // made path following oscillate against the stopped car's
+            // collision shell at roughly 260-320 cm without ever pressing A.
+            if (doorDistance > 135.0f)
             {
                 g_VehicleDriverReadySince = 0;
                 const float moveDX = doorPoint.X -
@@ -12184,10 +12638,10 @@ namespace
                 if (moveChanged || now >= g_VehicleLastDriverMoveAt + 5000)
                 {
                     if (IssueAIMoveToLocationOnGameThread(
-                            g_JasonAIState.Controller,
-                            doorPoint,
-                            45.0f,
-                            "DriverDoorSide"))
+                        g_JasonAIState.Controller,
+                        doorPoint,
+                        70.0f,
+                        "DriverDoorSide"))
                     {
                         g_VehicleLastDriverMovePoint = doorPoint;
                         g_VehicleHaveLastDriverMovePoint = true;
@@ -12207,68 +12661,14 @@ namespace
                 g_VehicleDriverReadySince = now;
                 return true;
             }
-            // The hood slam, seat overlap and counselor weapon state settle on
-            // separate latent frames. Dispatching the raw vehicle interaction
-            // after only 650 ms reproduced a stock null dereference one second
-            // later. Require both the stop and door-side overlap to remain
-            // stable before asking stock code to remove the driver.
-            if (now < g_VehicleDriverReadySince + 1800 ||
-                g_VehicleExtractionCommittedAt == 0 ||
-                now < g_VehicleExtractionCommittedAt + 2500)
+            // Restore the high-success September 9-15 timing exactly: once
+            // Jason has been settled at the driver door for 650 ms, press the
+            // seat Action/A wrapper.  The later selected-component wait held
+            // this input for roughly 2.5 seconds; by then the stock paired
+            // pull-out objects had often expired, producing the head-only
+            // animation and two guarded null virtual calls.
+            if (now < g_VehicleDriverReadySince + 650)
                 return true;
-
-            AActor* confirmedOccupant = nullptr;
-            UObject** liveExtractionComponent = reinterpret_cast<UObject**>(
-                reinterpret_cast<uintptr_t>(jason) + 0x1558);
-            const bool stableDriverState =
-                ReadLiveVehicleSeat(seat, car, confirmedOccupant) &&
-                confirmedOccupant == occupant &&
-                Memory::IsReadable(beingSlammed, 1) &&
-                *beingSlammed == 0 &&
-                std::fabs(SafeVehicleForwardSpeed(car)) <= liveDoorSpeed &&
-                Memory::IsReadable(
-                    liveExtractionComponent,
-                    sizeof(UObject*)) &&
-                *liveExtractionComponent == nullptr;
-            if (!stableDriverState)
-            {
-                g_VehicleDriverReadySince = 0;
-                if (now >= g_NextVehicleInterceptLogAt)
-                {
-                    g_NextVehicleInterceptLogAt = now + 2000;
-                    Logger::Debug(
-                        "18L-BL vehicle extraction deferred: stock car/seat state still settling");
-                }
-                return true;
-            }
-
-            UObject* extractionInteractComponent =
-                ResolveJasonCarExtractionInteractComponent(car, hood);
-            if (!extractionInteractComponent)
-            {
-                if (now >= g_NextVehicleInterceptLogAt)
-                {
-                    g_NextVehicleInterceptLogAt = now + 2000;
-                    Logger::Error(
-                        "18L-BM vehicle extraction deferred: verified car extraction component unavailable");
-                }
-                return true;
-            }
-
-            UObject* lockedVehicleInteraction =
-                GetLockedJasonInteractable(jason);
-            if (lockedVehicleInteraction &&
-                lockedVehicleInteraction != seat &&
-                lockedVehicleInteraction != extractionInteractComponent)
-            {
-                const bool released = CancelJasonInteractionLockOnly(
-                    GetJasonInteractionManager(jason));
-                g_NextVehicleInterceptActionAt = now + 150;
-                Logger::Debug(
-                    std::string("18L-AI vehicle intercept: cleared stale pre-extraction interaction lock | released=") +
-                    (released ? "true" : "false"));
-                return true;
-            }
 
             if (g_VehicleExtractionInputAt != 0 &&
                 g_VehicleExtractionAttempts >= 3 &&
@@ -12286,62 +12686,8 @@ namespace
                 g_VehicleExtractionInputAt == 0 ||
                 (now >= g_VehicleExtractionInputAt + 3000 &&
                  g_VehicleExtractionAttempts < 3);
-
-            // The September 11 route dispatched the seat wrapper, which
-            // actually removed drivers. Preserve the newer 2.5-second stop
-            // and live-seat checks above; the generic car component sent a
-            // valid-looking input but never acquired a driver-extraction lock.
-            UObject* manager = GetJasonInteractionManager(jason);
-            UObject* selectedVehicleInteraction = nullptr;
-            if (manager)
-            {
-                UObject** selectedPtr = reinterpret_cast<UObject**>(
-                    reinterpret_cast<uintptr_t>(manager) + 0x210);
-                if (Memory::IsReadable(selectedPtr, sizeof(UObject*)) &&
-                    *selectedPtr &&
-                    Memory::IsReadable(*selectedPtr, sizeof(UObject)))
-                {
-                    selectedVehicleInteraction = *selectedPtr;
-                }
-            }
-
-            if (lockedVehicleInteraction == seat ||
-                lockedVehicleInteraction == extractionInteractComponent)
-                return true;
-
-            // AttemptInteract is a void input. The unselected seat fallback
-            // can play a grab/choke sound while the counselor remains in the
-            // authoritative seat. Never claim extraction from that input;
-            // reposition until the stock manager selects the seat or the
-            // actual Jason car component.
-            const bool stockSeatReady =
-                selectedVehicleInteraction == seat ||
-                selectedVehicleInteraction == extractionInteractComponent;
-            if (!stockSeatReady)
-            {
-                if (now >= g_VehicleDriverReadySince + 2500)
-                {
-                    g_VehicleDriverReadySince = 0;
-                    g_VehicleDriverDetourReached = false;
-                    g_VehicleHaveCachedDriverDoorPoint = false;
-                    g_VehicleHaveLastDriverMovePoint = false;
-                    g_NextVehicleInterceptActionAt = now + 600;
-                    if (now >= g_NextVehicleInterceptLogAt)
-                    {
-                        g_NextVehicleInterceptLogAt = now + 2000;
-                        Logger::Debug(
-                            "18L-BQ extraction seat not selected; reapproaching driver door without false grab");
-                    }
-                }
-                return true;
-            }
-
-            const bool sentToSelectedComponent = extractionReadyNow &&
-                (selectedVehicleInteraction == seat
-                    ? AttemptJasonVehicleSeatComponent(seat)
-                    : AttemptJasonVehicleComponent(
-                        extractionInteractComponent));
-            if (sentToSelectedComponent)
+            if (extractionReadyNow &&
+                AttemptJasonVehicleSeatComponent(seat))
             {
                 ++g_VehicleExtractionAttempts;
                 g_VehicleExtractionInputAt = now;
@@ -12351,10 +12697,7 @@ namespace
                 Logger::Success(
                     "18L-AI vehicle intercept: driver-side extraction input sent | attempt=" +
                     std::to_string(g_VehicleExtractionAttempts) +
-                    " | seatSelected=" +
-                    (selectedVehicleInteraction == seat ? "true" : "false") +
-                    " | stockSelected=" +
-                    (stockSeatReady ? "true" : "false") +
+                    " | route=restored-september11-seat-wrapper" +
                     " | counselor=" +
                     JasonAISafeName(reinterpret_cast<UObject*>(occupant)));
             }
@@ -14731,12 +15074,58 @@ namespace
             ReadCounselorRouteMatchPhase();
         if (matchPhase == CounselorRouteMatchPhase::NotInProgress)
         {
-            ReleaseJasonSpectatorOverrideForCinematic("postmatch");
+            AbandonJasonSpectatorOverrideForWorldTeardown("postmatch");
             SetJasonHighPriorityPursuitBoost(false, "postmatch");
             g_JasonAIState.Active = false;
             if (!g_PostMatchAIRetired)
             {
                 g_PostMatchAIRetired = true;
+                // One-shot forensic snapshot for premature stock match ends
+                // (notably Grendel).  This runs only after InProgress has
+                // already ended, so it adds no gameplay cadence or FPS cost.
+                Logger::Debug(
+                    "18L-BT POSTMATCH ROSTER: registeredTargets=" +
+                    std::to_string(g_JasonAITargetCount));
+                for (int32_t i = 0; i < g_JasonAITargetCount; ++i)
+                {
+                    AActor* target = g_JasonAITargets[i];
+                    float healthValue = -1.0f;
+                    uint8_t deadValue = 0xFF;
+                    bool escaped = false;
+                    bool hasController = false;
+                    if (target && Memory::IsReadable(target, 0x1032))
+                    {
+                        float* health = reinterpret_cast<float*>(
+                            reinterpret_cast<uintptr_t>(target) +
+                            Offsets::ASCCharacter_Health);
+                        if (Memory::IsReadable(health, sizeof(float)) &&
+                            std::isfinite(*health))
+                        {
+                            healthValue = *health;
+                        }
+                        uint8_t* dead = reinterpret_cast<uint8_t*>(
+                            reinterpret_cast<uintptr_t>(target) + 0x1031);
+                        if (Memory::IsReadable(dead, 1))
+                            deadValue = *dead;
+                        UObject** targetController =
+                            reinterpret_cast<UObject**>(
+                                reinterpret_cast<uintptr_t>(target) + 0x3A0);
+                        hasController =
+                            Memory::IsReadable(
+                                targetController, sizeof(UObject*)) &&
+                            *targetController != nullptr;
+                        escaped = HasCounselorEscaped(target);
+                    }
+                    Logger::Debug(
+                        "18L-BT POSTMATCH TARGET[" +
+                        std::to_string(i) + "]=" +
+                        JasonAISafeName(reinterpret_cast<UObject*>(target)) +
+                        " | health=" + std::to_string(healthValue) +
+                        " | dead=" + std::to_string(deadValue) +
+                        " | escaped=" + (escaped ? "true" : "false") +
+                        " | controller=" +
+                        (hasController ? "true" : "false"));
+                }
                 Logger::Success(
                     "18L-AJ POSTMATCH SAFETY: counselor-route Jason AI retired before gameplay-object teardown");
             }
@@ -15259,6 +15648,11 @@ namespace FrozenJasonBridge
         UObject* object,
         UFunction* function)
     {
+        // This exported callback already runs before stock ProcessEvent.
+        // Reuse that protected engine seam to relinquish a forced Jason
+        // spectator target before EndMatch/return-to-menu enters LeavingMap.
+        PrepareJasonSpectatorForTeardownEvent(function);
+
         if (!object || !function || !object->Class)
             return;
 
@@ -15597,6 +15991,14 @@ namespace FrozenJasonBridge
         if (!g_JasonSpectatorForced || !function)
             return false;
 
+        if (ReadCounselorRouteMatchPhase() ==
+            CounselorRouteMatchPhase::NotInProgress)
+        {
+            AbandonJasonSpectatorOverrideForWorldTeardown(
+                "camera-event-postmatch");
+            return false;
+        }
+
         // This runs from ProcessEvent. Keep the rejection path to a cached
         // integer comparison so normal gameplay pays no reflection/string cost.
         static int32_t spectatorCameraNameIndex = -2;
@@ -15637,6 +16039,14 @@ namespace FrozenJasonBridge
     {
         if (!g_JasonSpectatorForced || !function)
             return false;
+
+        if (ReadCounselorRouteMatchPhase() ==
+            CounselorRouteMatchPhase::NotInProgress)
+        {
+            AbandonJasonSpectatorOverrideForWorldTeardown(
+                "camera-result-postmatch");
+            return false;
+        }
 
         // This shares ProcessEvent's hottest path. Reject everything except
         // the one camera-manager event with a cached FName integer.

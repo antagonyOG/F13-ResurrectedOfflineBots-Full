@@ -6,9 +6,19 @@ Sandbox Lite or the older V1 AI.
 No game executable, game PAK, mod DLL, launcher EXE, build artifacts, logs, or
 discovery files are included.
 
-The full Offline Play counselor route is integrated at runtime by the backend;
-the adjacent `version.dll` proxy loads that backend during a normal packed-game
-startup. No unsigned menu PAK or `-NoPak` switch is required.
+The full Offline Play counselor route is integrated at runtime by the backend.
+This compatibility revision uses the EXE's direct `X3DAudio1_7.dll` import as
+the installed, application-local bootstrap. It forwards both audio exports to
+the real system DLL and loads the adjacent backend after the game window is
+stable. The prior `version.dll` loader remains buildable but is not required by
+the installer. No unsigned menu PAK or `-NoPak` switch is required.
+
+This revision was tested through the normal packed-game launch on Crystal Lake
+Small and Grendel. A successful compile or installer copy does not prove that
+Windows selected the local proxy on every system. Run
+`VERIFY-OFFLINE-BOTS-INSTALL.bat` after a launch and inspect its timestamped
+bootstrap log. The installer checks the exact supported EXE SHA-256:
+`5541268C88B6C02BFB8BDA2D4B07E3E04BB6A03CEF1C5E89163B1E9FBC32A430`.
 
 The backend includes the current Jason and counselor AI, multi-map spawning and
 navigation, car pursuit and extraction, knives and traps, objectives,

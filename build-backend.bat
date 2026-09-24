@@ -5,33 +5,35 @@ call "%~dp0VERIFY-FROZEN-HASHES.bat"
 if errorlevel 1 (
   echo.
   echo Build stopped so the frozen autonomous Jason AI cannot be altered accidentally.
-  pause
   exit /b 1
 )
-
+set Path=
+set "Path=%SystemRoot%\System32;%SystemRoot%"
+set "TEMP=%LOCALAPPDATA%\Temp"
+set "TMP=%LOCALAPPDATA%\Temp"
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" (
-  echo Visual Studio 2022 or Build Tools with Desktop development with C++ is required.
-  pause
+  echo Visual Studio with Desktop development with C++ is required.
   exit /b 1
 )
-for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe`) do set "MSBUILD=%%i"
-if not defined MSBUILD (
-  echo MSBuild not found.
-  pause
+for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%I"
+if not defined VSROOT (
+  echo Visual Studio not found.
   exit /b 1
 )
+if not exist "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" exit /b 2
+call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" >nul
+if errorlevel 1 exit /b 1
+set "MSBUILD=%VSROOT%\MSBuild\Current\Bin\MSBuild.exe"
+if not exist "%MSBUILD%" exit /b 2
 "%MSBUILD%" "%~dp0ResurrectedOfflineBots.sln" /m /p:Configuration=Release /p:Platform=x64 /p:TrackFileAccess=false
 if errorlevel 1 (
   echo Build failed.
-  pause
   exit /b 1
 )
 copy /y "%~dp0bin\ResurrectedOfflineBots.dll" "%~dp0ResurrectedOfflineBots.dll" >nul
 
 echo.
 echo Built: %~dp0ResurrectedOfflineBots.dll
-echo 18L-AC hooks ILLBackendBlueprintLibrary::RequestOfflineMode synchronously and uses PASS-THROUGH lifecycle trace hooks only.
-echo No lifecycle behavior is replaced and frozen AI is not auto-started in this foundation proof.
 echo Frozen Features/Engine hashes were verified before compilation.
-pause
+echo Runtime behavior must be verified on the target game installation.

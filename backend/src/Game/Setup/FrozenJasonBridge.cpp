@@ -11934,6 +11934,56 @@ namespace
         if (Memory::IsReadable(extractionComponent, sizeof(UObject*)) &&
             *extractionComponent)
         {
+            // The stock component may survive a failed paired pull-out even
+            // when GetGrabbedCounselor is null. The held-counselor lane above
+            // already times out a partial seated grab after 5.5 seconds; do
+            // the same here or this early return disables every other Jason
+            // and counselor AI lane for the remainder of the match.
+            if (g_VehicleInterceptCar && g_VehicleExtractionInputAt != 0 &&
+                now >= g_VehicleExtractionInputAt + 5500)
+            {
+                AActor* seatedCounselor = nullptr;
+                const bool driverStillSeated = g_VehicleInterceptSeat &&
+                    ReadCachedVehicleSeatFast(
+                        g_VehicleInterceptSeat,
+                        g_VehicleInterceptCar,
+                        seatedCounselor) &&
+                    seatedCounselor != nullptr;
+                UObject* manager = GetJasonInteractionManager(jason);
+                const bool released = manager &&
+                    ReleaseStaleJasonHidingInteraction(
+                        manager,
+                        jason,
+                        now,
+                        "vehicle-extraction-no-held-counselor");
+                const bool componentCleared =
+                    SafeClearObjectPointerField(jason, 0x1558);
+                Logger::Error(
+                    "18L-BQ stale driver pull-out timed out | seated=" +
+                    std::to_string(driverStillSeated ? 1 : 0) +
+                    " | released=" + std::to_string(released ? 1 : 0) +
+                    " | componentCleared=" +
+                    std::to_string(componentCleared ? 1 : 0));
+                if (driverStillSeated)
+                {
+                    // Keep the stopped car as Jason's sole target, but let
+                    // the stock driver-side interaction start afresh.
+                    g_VehicleExtractionInputAt = 0;
+                    g_VehicleExtractionAttempts = 0;
+                    g_VehicleDriverReadySince = 0;
+                    g_VehicleHaveCachedDriverDoorPoint = false;
+                    g_VehicleHaveLastDriverMovePoint = false;
+                    g_VehicleLastDriverMoveAt = 0;
+                    g_NextVehicleInterceptActionAt = now + 250;
+                    return true;
+                }
+                // The seat cleared without a native held counselor. Retire
+                // this stale car episode so ordinary pursuit and sweater
+                // convergence can resume instead of returning here forever.
+                ResetVehicleInterceptionState(now + 2000);
+                SetJasonHighPriorityPursuitBoost(false, "stale-driver-pull-out");
+                return false;
+            }
             // CurrentVehicleGrabKillComp means the stock pull-out action has
             // started, not that the driver has left the seat. The older
             // working route kept this car lane alive here. Clearing it at the
@@ -16669,6 +16719,33 @@ namespace FrozenJasonBridge
             return false;
         }
 
+        // UE names the loaded UWorld for its map package. The shipped map
+        // definition has also appeared as both Grendel and Grendal, so accept
+        // those two spellings from the world or its package, never from an
+        // objective actor that could be present in another level.
+        auto isGrendelName = [](const std::string& name)
+        {
+            std::string lower = name;
+            for (char& ch : lower)
+            {
+                if (ch >= 'A' && ch <= 'Z')
+                    ch = static_cast<char>(ch - 'A' + 'a');
+            }
+            return lower.find("grendel") != std::string::npos ||
+                lower.find("grendal") != std::string::npos;
+        };
+        const std::string worldName =
+            JasonAISafeName(reinterpret_cast<UObject*>(world));
+        UObject* worldPackage =
+            reinterpret_cast<UObject*>(world)->OuterPrivate;
+        const std::string packageName = worldPackage &&
+            Memory::IsReadable(worldPackage, sizeof(UObject))
+                ? JasonAISafeName(worldPackage) : std::string{};
+        const bool isGrendelMap =
+            isGrendelName(worldName) || isGrendelName(packageName);
+        Logger::Debug("Offline Bots map identity: world=" + worldName +
+            " | package=" + packageName);
+
         RestoreFrozenControllerTickHook();
         RemoveOfflineBotsControllerTickHook();
         RemoveNativeInteractionExceptionGuard();
@@ -16995,6 +17072,20 @@ namespace FrozenJasonBridge
         g_JasonAIState.LastAcceptedMoveAt = 0;
         g_JasonAIState.ConsecutiveStuckChecks = 0;
         g_JasonAIState.HaveLastLocation = false;
+
+        if (isGrendelMap)
+        {
+            // Only bypass the strategic opener. The ordinary controller Tick
+            // still owns counselor pursuit, combat, knives, Morph, doors,
+            // vehicles, and stuck recovery after adoption completes.
+            g_JasonAIState.StartupTrapSetupActive = false;
+            g_JasonAIState.StartupTrapNextActionAt = 0;
+            g_JasonAIState.InitialTeleportAt = now + 1000;
+            g_JasonAIState.NextDistanceTeleportAt = now + 1000;
+            g_JasonAIState.LastMorphTeleportAt = 0;
+            Logger::Success(
+                "Grendel detected: strategic trap placement disabled");
+        }
 
         RegisterJasonAITarget(localCounselor);
         RegisterLiveCounselorTargets(world);

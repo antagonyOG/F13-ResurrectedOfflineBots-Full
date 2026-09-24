@@ -1,0 +1,4 @@
+LIBRARY X3DAudio1_7
+EXPORTS
+    X3DAudioInitialize=ProxyX3DAudioInitialize
+    X3DAudioCalculate=ProxyX3DAudioCalculate

@@ -6790,13 +6790,12 @@ static bool RunJasonAIChaseUpdateOnGameThread()
                             ConsecutiveNearTargetStuckDeferrals =
                             0;
 
-                        // Force a fresh chase request this tick instead
-                        // of abandoning the cabin/room for a teleport.
-                        g_JasonAIState.PathLocked =
-                            false;
-
-                        g_JasonAIState.PathLockUntil =
-                            0;
+                        // The interaction already releases the old path
+                        // once, so the next chase request crosses the newly
+                        // opened doorway. Keep that accepted path during
+                        // traversal grace. Clearing its lock on every short
+                        // movement sample restarted MoveTo every two seconds
+                        // and left Jason circling the same threshold.
                     }
                     else if (g_JasonAIState.
                         ConsecutiveStuckChecks < 2)
@@ -8854,6 +8853,24 @@ static bool TickJasonAIKnifeSequenceOnGameThread(
 
         if (countConsumed || driverReleased)
         {
+            // The AI pawn does not receive the local-player montage's final
+            // EndThrow callback.  The projectile/driver transition can happen
+            // before the montage has finished, so give it a short settle
+            // window, then invoke the same stock completion used by the
+            // timeout recovery.  Without this, later knife presses stay
+            // unarmed and melee/interaction inputs can be ignored.
+            if (g_JasonAIState.KnifeReleaseSentAt != 0 &&
+                now < g_JasonAIState.KnifeReleaseSentAt + 500)
+            {
+                return true;
+            }
+
+            uintptr_t endAddress =
+                (uintptr_t)module + RVA_ServerEndThrow;
+            bool endOK =
+                Memory::IsReadable((void*)endAddress, 1) &&
+                SafeJasonInteractionCall(jason, endAddress);
+
             Logger::Debug(
                 std::string(
                     "Jason AI knife stock animation completed: countConsumed=") +
@@ -8868,6 +8885,7 @@ static bool TickJasonAIKnifeSequenceOnGameThread(
                 " | driver=" +
                 std::to_string((uintptr_t)g_JasonAIState.KnifeDriverAtRelease) +
                 "->" + std::to_string((uintptr_t)currentDriver) +
+                " | EndThrow=" + (endOK ? "true" : "false") +
                 " | afterReleaseMs=" +
                 std::to_string(
                     g_JasonAIState.KnifeReleaseSentAt ?
@@ -9379,6 +9397,40 @@ static bool RunJasonAICombatOnGameThread()
 
     FVector jasonLocation{};
     FVector targetLocation{};
+
+    // A successful call into an input thunk only proves that it returned
+    // without an exception.  Sample the native action gates infrequently so
+    // the next test can distinguish a rejected attack from a wrong target.
+    static ULONGLONG nextActionGateLogAt = 0;
+    if (now >= nextActionGateLogAt)
+    {
+        nextActionGateLogAt = now + 8000;
+        const uintptr_t base = reinterpret_cast<uintptr_t>(jason);
+        auto byteAt = [base](uintptr_t offset) -> int
+        {
+            const uint8_t* field =
+                reinterpret_cast<const uint8_t*>(base + offset);
+            return Memory::IsReadable(field, 1) ? *field : -1;
+        };
+        auto pointerSetAt = [base](uintptr_t offset) -> int
+        {
+            void* const* field =
+                reinterpret_cast<void* const*>(base + offset);
+            return Memory::IsReadable(field, sizeof(void*)) ?
+                (*field != nullptr ? 1 : 0) : -1;
+        };
+        Logger::Debug(
+            "Jason AI action gates: target=" +
+            JasonAISafeName(reinterpret_cast<UObject*>(target)) +
+            " | E98=" + std::to_string(byteAt(0xE98)) +
+            " | EE8=" + std::to_string(byteAt(0xEE8)) +
+            " | knifePressed=" + std::to_string(byteAt(0x15F8)) +
+            " | knifeDriver=" + std::to_string(pointerSetAt(0x10F0)) +
+            " | holding=" + std::to_string(pointerSetAt(0x1500)) +
+            " | doorBreak=" + std::to_string(pointerSetAt(0x1680)) +
+            " | special14CE=" + std::to_string(byteAt(0x14CE)) +
+            " | special14D8=" + std::to_string(byteAt(0x14D8)));
+    }
 
     if (!GetJasonAIActorLocation(
         jason,

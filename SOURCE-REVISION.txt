@@ -1,14 +1,15 @@
-Source revision: frozen definitive packed Full Edition, 2026-09-19
-The project has no Git commit in this working tree; SHA-256 hashes identify the revision.
+Compatibility-fix source, 2026-09-23.
+The frozen 2026-09-19 gameplay is the parent revision. This revision adds the
+Grendel startup-trap override and two targeted car/nav recovery fixes.
 
-EAC25B8427A2FEF37BFDDAB77A0B1038A9E7C021CE5A81A3BC5D529A31F64BC8  backend/src/BackendMain.cpp
-1ECD8B87D7E57E24045A4B5A57F90D2323B40606C2CC166ABC92B9565C09A7FC  backend/src/Game/Setup/FrozenJasonBridge.cpp
-1FB08FEF18980D0D65E6392CAAD439B03387CEEFBAF2E1F08944E742A6F315BF  backend/src/Game/Features/Features.cpp
-2B9ABDECDF2E70F5B96606C86165A0393C7357553640DF57D7D4829C556156E6  backend/src/Game/Engine/Engine.cpp
-0BFECA8B87EB641E4CADE3556FDB433CD487CB716027E4AA16F45ADA3A69A139  backend/src/Game/Setup/OfflineSetup.cpp
-59FFCF4483236DDFEEFD2E118DE2BBA63E0D281669EA7BF37377898D6B906C75  bootstrap/VersionProxy.cpp
-5C3331B9DA6F059A698843705B5724B012BF7BB14EC0705F6460131B0AB75454  bootstrap/VersionProxy.def
+Supported game EXE SHA-256:
+5541268C88B6C02BFB8BDA2D4B07E3E04BB6A03CEF1C5E89163B1E9FBC32A430
 
-Released backend DLL SHA-256: 14C84AA9CDAE6C4C658830F90CE16B92F6739BF3B085E07E9C29978F2CA19D92
-Released loader DLL SHA-256: 86626E22171A92F719E01C28FD831FF2547D5D9409033460F2311EA20C10428F
-These DLLs are not present in this source-only package.
+Player-tested backend build SHA-256:
+0472E68F85CED50DB878EAE4E2D184F9CD10F3BCBBFD9830BA1414291A7D0E15
+X3DAudio1_7.dll proxy SHA-256:
+D9068BFC1FDEA3A748E4E06D9983DE3B5FB3CFC8B3A5A610D105ACFF31A73843
+
+The backend binary and proxy are not in the source-only archive. These hashes
+identify the matching public payload tested on Crystal Lake Small and Grendel.
+Local rebuilds need not have an identical binary hash because of linker metadata.

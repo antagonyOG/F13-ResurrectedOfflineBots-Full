@@ -24,7 +24,11 @@ if errorlevel 1 exit /b 1
 pushd "%~dp0bootstrap"
 call build-version-proxy.bat
 set "RESULT=%ERRORLEVEL%"
+if "%RESULT%"=="0" (
+  call build-x3daudio-proxy.bat
+  set "RESULT=%ERRORLEVEL%"
+)
 popd
 if not "%RESULT%"=="0" exit /b %RESULT%
-echo Built loader: %~dp0bootstrap\build\version.dll
+echo Built loaders: %~dp0bootstrap\build\version.dll and X3DAudio1_7.dll
 exit /b 0

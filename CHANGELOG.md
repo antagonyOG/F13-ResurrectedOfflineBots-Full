@@ -1,3 +1,12 @@
+# v2.1.2 - 2026-09-24
+
+- Fixed counselor selection capture so the counselor accepted in the native
+  picker (tested with Chad) is the one actually spawned.
+- Added a bounded navmesh fallback for Jason's police-phone trap staging;
+  the phone trap was visibly confirmed in a packed-game test.
+- Retained the original Shipping EXE filename and application-local audio
+  proxy bootstrap; no EXE rename or original game file replacement is needed.
+
 # Compatibility fix - 2026-09-23
 
 ## Compatibility / bootstrap

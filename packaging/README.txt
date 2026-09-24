@@ -1,7 +1,8 @@
-Resurrected Offline Bots Full - v2.1.1 compatibility fix
+Resurrected Offline Bots Full - v2.1.2 compatibility fix
 
-This build was tested in the normal packed installation on Crystal Lake Small
-and Grendel. It supports only the game EXE with
+This build was tested in the normal packed installation on Crystal Lake Small.
+The preceding compatibility build was also tested on Grendel. It supports
+only the game EXE with
 SHA-256 5541268C88B6C02BFB8BDA2D4B07E3E04BB6A03CEF1C5E89163B1E9FBC32A430.
 
 Install: extract this package into the Resurrected game folder containing

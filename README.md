@@ -1,7 +1,8 @@
 # Resurrected Offline Bots - Full Edition, definitive packed source
 
-This is the source-only review package for the frozen 2026-09-19 Full Edition
-DLL player-tested in the normal packed Steam installation. It is **not**
+This is the source-only review package for the v2.1.2 Full Edition DLL,
+derived from the frozen 2026-09-19 gameplay build and player-tested in the
+normal packed Steam installation. It is **not**
 Sandbox Lite or the older V1 AI.
 No game executable, game PAK, mod DLL, launcher EXE, build artifacts, logs, or
 discovery files are included.
@@ -14,7 +15,9 @@ stable. The prior `version.dll` loader remains buildable but is not required by
 the installer. No unsigned menu PAK or `-NoPak` switch is required.
 
 This revision was tested through the normal packed-game launch on Crystal Lake
-Small and Grendel. A successful compile or installer copy does not prove that
+Small with the selected counselor and Jason, and the phone trap confirmed.
+The preceding compatibility DLL was tested on Grendel. A successful compile
+or installer copy does not prove that
 Windows selected the local proxy on every system. Run
 `VERIFY-OFFLINE-BOTS-INSTALL.bat` after a launch and inspect its timestamped
 bootstrap log. The installer checks the exact supported EXE SHA-256:

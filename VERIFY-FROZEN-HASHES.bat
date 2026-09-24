@@ -4,7 +4,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 set "ROOT=%~dp0backend\src\Game"
 set "FAIL=0"
 
-call :CHECK "%ROOT%\Features\Features.cpp" e43df25a1b48b53031f06bfd40e21332e82178f375c8b9702736b81658a7ec49
+call :CHECK "%ROOT%\Features\Features.cpp" 85F126F6E137E3B02E33ABB03055C8BF967641F963276457BFA97A56E345B234
 call :CHECK "%ROOT%\Features\Features.hpp" 09d29bfb90c142d3668fc52fb215879fd383670d2eb97bf0decf08789a3d032b
 call :CHECK "%ROOT%\Engine\Engine.cpp" 2b9abdecdf2e70f5b96606c86165a0393c7357553640df57d7d4829c556156e6
 call :CHECK "%ROOT%\Engine\Engine.hpp" abe325645d21cf048178bb555c64310430b60a0650c6fd14691f8e8f84454c8c

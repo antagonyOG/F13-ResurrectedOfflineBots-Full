@@ -1,15 +1,20 @@
-Compatibility-fix source, 2026-09-23.
-The frozen 2026-09-19 gameplay is the parent revision. This revision adds the
-Grendel startup-trap override and two targeted car/nav recovery fixes.
+Full Edition v2.1.2 source, 2026-09-24.
+The frozen 2026-09-19 gameplay is the parent revision. This release retains
+the Grendel startup-trap override and targeted car/nav recovery fixes. It also
+corrects native counselor selection capture and adds a bounded navmesh
+fallback for police-phone trap staging.
 
 Supported game EXE SHA-256:
 5541268C88B6C02BFB8BDA2D4B07E3E04BB6A03CEF1C5E89163B1E9FBC32A430
 
 Player-tested backend build SHA-256:
-0472E68F85CED50DB878EAE4E2D184F9CD10F3BCBBFD9830BA1414291A7D0E15
+BAED41209269744A3AB835ED37178E207A1FCF7AD0A4E85C60CCEE7E41CAFBC2
 X3DAudio1_7.dll proxy SHA-256:
 D9068BFC1FDEA3A748E4E06D9983DE3B5FB3CFC8B3A5A610D105ACFF31A73843
 
 The backend binary and proxy are not in the source-only archive. These hashes
-identify the matching public payload tested on Crystal Lake Small and Grendel.
+identify the matching public payload. On 2026-09-24, the normal-name packed
+game test selected Chad and Part 5 Jason, visibly placed the police-phone trap,
+and closed cleanly. Grendel and Jason-kill/outro testing used the prior
+compatibility build and were not repeated with this exact DLL.
 Local rebuilds need not have an identical binary hash because of linker metadata.

@@ -11070,19 +11070,74 @@ static bool TeleportJasonAIToStartupTrapObjectiveOnGameThread(
             1 :
             -1;
 
-        // Keep the staging point world-space exact. The precision comes from
-        // the subsequent walk/CanPlaceTrap probe, not from a large nav snap.
-        if (TryTeleportCandidate(
+        // Prefer the proven exact staging point. If collision rejects it,
+        // try a small, bounded set of nearby outdoor nav points. Jason still
+        // walks to the fuse box and probes native CanPlaceTrap afterward.
+        if (!TryTeleportCandidate(
                 desiredStand,
                 false,
                 0.0f,
                 chosenDirection))
         {
-            usedNavProjection =
-                false;
+            auto TryPhoneNavCandidate =
+                [&](const FVector& candidate,
+                    int32_t direction) -> bool
+            {
+                FVector extent{};
+                extent.X = 300.0f;
+                extent.Y = 300.0f;
+                extent.Z = 350.0f;
+                FVector projected{};
+                if (!ProjectJasonAINavPointOnGameThread(
+                        candidate, extent, projected))
+                    return false;
 
-            usedDirectFallback =
-                true;
+                const float snapDX = projected.X - candidate.X;
+                const float snapDY = projected.Y - candidate.Y;
+                const float snap = std::sqrt(
+                    snapDX * snapDX + snapDY * snapDY);
+                const float boxDX = projected.X - objectiveLocation.X;
+                const float boxDY = projected.Y - objectiveLocation.Y;
+                const float boxDistance = std::sqrt(
+                    boxDX * boxDX + boxDY * boxDY);
+                if (!std::isfinite(snap) ||
+                    !std::isfinite(boxDistance) ||
+                    snap > 260.0f ||
+                    boxDistance < 300.0f ||
+                    boxDistance > 1000.0f ||
+                    std::abs(projected.Z - objectiveLocation.Z) > 220.0f)
+                    return false;
+
+                const bool teleported = TryTeleportCandidate(
+                    projected, false, 0.0f, direction);
+                if (teleported)
+                {
+                    usedNavProjection = true;
+                    usedDirectFallback = false;
+                }
+                return teleported;
+            };
+
+            if (!TryPhoneNavCandidate(
+                    desiredStand, chosenDirection))
+            {
+                for (int32_t lateralIndex = 0;
+                     lateralIndex < 2;
+                     ++lateralIndex)
+                {
+                    const int32_t lateralSign =
+                        lateralIndex == 0 ? -1 : 1;
+                    FVector lateralStand = desiredStand;
+                    lateralStand.X +=
+                        right.X * 230.0f * lateralSign;
+                    lateralStand.Y +=
+                        right.Y * 230.0f * lateralSign;
+                    if (TryPhoneNavCandidate(
+                            lateralStand,
+                            chosenDirection * 10 + lateralSign))
+                        break;
+                }
+            }
         }
     }
     else if (kind == 4)
@@ -11782,7 +11837,8 @@ static bool RunJasonAIStartupTrapSetupOnGameThread()
         g_JasonAIState.StartupTrapTeleported = false;
         ++g_JasonAIState.StartupTrapRetryCount;
 
-        if (g_JasonAIState.StartupTrapRetryCount >= 4)
+        if (g_JasonAIState.StartupTrapRetryCount >=
+            (kind == 1 ? 6 : 4))
         {
             Logger::Debug(
                 std::string("Jason AI trap setup skipping objective after slow retries: ") +
@@ -11861,7 +11917,8 @@ static bool RunJasonAIStartupTrapSetupOnGameThread()
             g_JasonAIState.StartupTrapTransitNextMoveAt = 0;
             ++g_JasonAIState.StartupTrapRetryCount;
 
-            if (g_JasonAIState.StartupTrapRetryCount >= 4)
+            if (g_JasonAIState.StartupTrapRetryCount >=
+                (kind == 1 ? 6 : 4))
             {
                 Logger::Debug(
                     std::string("Jason AI trap setup: unable to find legal Morph point, skipping ") +
@@ -12014,7 +12071,8 @@ static bool RunJasonAIStartupTrapSetupOnGameThread()
         g_JasonAIState.StartupTrapPhoneCandidateHoldActive = false;
         ++g_JasonAIState.StartupTrapRetryCount;
 
-        if (g_JasonAIState.StartupTrapRetryCount >= 4)
+        if (g_JasonAIState.StartupTrapRetryCount >=
+            (kind == 1 ? 6 : 4))
         {
             Logger::Debug(
                 std::string("Jason AI trap setup: stock CanPlaceTrap never accepted, skipping ") +

@@ -1510,8 +1510,26 @@ namespace
             context &&
             (!trackedPicker ||
                 trackedPicker == reinterpret_cast<uintptr_t>(context));
+        bool acceptCastPatched = false;
         if (routePickerAccept)
         {
+            // The stock Accept Ubergraph casts the frontend PlayerState too.
+            // Widening only Construct leaves Accept's RequestCounselorClass
+            // branch behind the SCPlayerState_Lobby cast, so the previous
+            // Customize profile can silently win at counselor birth.
+            UObject* widget = reinterpret_cast<UObject*>(context);
+            if (widget->Class)
+            {
+                acceptCastPatched =
+                    PatchCounselorPickerConstructPlayerStateCast(
+                        widget->Class,
+                        true);
+            }
+            if (!acceptCastPatched)
+            {
+                Logger::Error(
+                    "18L-AK counselor picker Accept cast patch failed; selected counselor may not commit");
+            }
             // Set before entering the original Blueprint. Its synchronous
             // branch calls RequestCounselorClass/profile save and then
             // PlayTransitionOut before this wrapper returns.
@@ -1528,6 +1546,9 @@ namespace
                 result);
         }
 
+        if (acceptCastPatched)
+            RestoreCounselorPickerPlayerStateCast();
+
         // OnClick_Accept synchronously invokes RequestCounselorClass and the
         // profile-save path before it returns. Capture that native result now,
         // rather than waiting for the 500 ms frontend poll (the route has
@@ -1542,7 +1563,10 @@ namespace
             g_CounselorMenuRouteLatched.store(true);
             ArmObjectivesWidgetGameStatePatch();
             Logger::Success(
-                "18L-AK COUNSELOR PICKER CAPTURED: accepted native profile selection is locked for this match");
+                "18L-AK COUNSELOR PICKER CAPTURED: accepted native profile selection=" +
+                SafeName(reinterpret_cast<UObject*>(
+                    g_TargetPlayerCounselorClass.load())) +
+                " is locked for this match");
         }
     }
 
